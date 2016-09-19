@@ -11,6 +11,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
@@ -18,13 +19,15 @@ import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.io.sstable.SSTableLoader.Client;
 import org.apache.cassandra.streaming.DefaultConnectionFactory;
 import org.apache.cassandra.streaming.StreamConnectionFactory;
 import org.apache.cassandra.utils.FBUtilities;
 
 public class ProcessSStable {
 
-	
+	private static Map<String,Set<Range<Token>>> uniqueRange = new HashMap<>();
+	private final Client client;
 	/**
 	 * 
 	 * access here token range stuff
@@ -40,7 +43,61 @@ public class ProcessSStable {
 	 * 	open writer and write it to SSTables
 	 *	
 	 */
+	public ProcessSStable(Client client) {
+		this.client = client;
+	}
 	
+	/**
+	 * 
+	 * @return
+	 */
+	public Map<InetAddress, Collection<Range<Token>>> getClientEndPointRanges(){
+		return client.getEndpointToRangesMap();
+	}
+	
+	/**
+	 * Initialize the uniqueRangeMap
+	 */
+	public void initUniqueMap(){
+		Map<InetAddress, Collection<Range<Token>>> endPointRanges = getClientEndPointRanges();
+		
+		for(Map.Entry<InetAddress, Collection<Range<Token>>> entry : getClientEndPointRanges().entrySet()){
+			String entryInetAddress = entry.getKey().toString();
+			for(Map.Entry<InetAddress, Collection<Range<Token>>> innerEntry : endPointRanges.entrySet()){
+				String innerEntryInetAddress = innerEntry.getKey().toString();
+				if(!entryInetAddress.equals(innerEntryInetAddress)){
+					Set<Range<Token>> entrySet = new HashSet<>(entry.getValue());
+					Set<Range<Token>> innerEntrySet = new HashSet<>(innerEntry.getValue());
+					entrySet.removeAll(innerEntrySet);
+					if(uniqueRange.containsKey(generateUniqueName(entryInetAddress,innerEntryInetAddress)) 
+							|| uniqueRange.containsKey(generateUniqueName(innerEntryInetAddress, entryInetAddress))){
+						String key = generateUniqueName(entryInetAddress, innerEntryInetAddress);
+						Set<Range<Token>> alreadyExist = uniqueRange.get(key);
+						if(alreadyExist==null){
+							key = generateUniqueName(innerEntryInetAddress, entryInetAddress);
+							alreadyExist = uniqueRange.get(key);
+						}
+						alreadyExist.addAll(entrySet);
+						uniqueRange.put(key,alreadyExist);
+					}else{
+						uniqueRange.put(generateUniqueName(entryInetAddress, innerEntryInetAddress),entrySet);
+					}
+				}
+			}
+		}
+		System.out.println(uniqueRange.keySet());
+	}
+
+	/**
+	 * 
+	 * @param node_one
+	 * @param node_two
+	 * @return
+	 */
+	private static String generateUniqueName(String node_one, String node_two){
+		return node_one+"_"+node_two;
+	}
+
 	
 	public static abstract class Client
     {

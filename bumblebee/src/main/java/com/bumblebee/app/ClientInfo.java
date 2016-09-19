@@ -55,6 +55,7 @@ import org.apache.thrift.protocol.TBinaryProtocol;
 import org.apache.thrift.protocol.TProtocol;
 import org.apache.thrift.transport.TTransport;
 
+import com.bumblebee.app.ProcessSStable.Client;
 import com.google.common.base.Joiner;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
@@ -121,6 +122,11 @@ public class ClientInfo {
     public File getDifrectory(){
     	return this.directory;
     }
+    
+    public Client getClient(){
+    	return externalClient;
+    }
+    
     // Return true when everything is at 100%
     static class ProgressIndicator implements StreamEventHandler
     {
