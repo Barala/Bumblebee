@@ -19,7 +19,6 @@ import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.io.sstable.SSTableLoader.Client;
 import org.apache.cassandra.streaming.DefaultConnectionFactory;
 import org.apache.cassandra.streaming.StreamConnectionFactory;
 import org.apache.cassandra.utils.FBUtilities;
@@ -68,7 +67,7 @@ public class ProcessSStable {
 				if(!entryInetAddress.equals(innerEntryInetAddress)){
 					Set<Range<Token>> entrySet = new HashSet<>(entry.getValue());
 					Set<Range<Token>> innerEntrySet = new HashSet<>(innerEntry.getValue());
-					entrySet.removeAll(innerEntrySet);
+					entrySet.retainAll(innerEntrySet);
 					if(uniqueRange.containsKey(generateUniqueName(entryInetAddress,innerEntryInetAddress)) 
 							|| uniqueRange.containsKey(generateUniqueName(innerEntryInetAddress, entryInetAddress))){
 						String key = generateUniqueName(entryInetAddress, innerEntryInetAddress);
@@ -85,6 +84,31 @@ public class ProcessSStable {
 				}
 			}
 		}
+		
+		// this is to check  whether node itself have some unique range or not
+			Map<String, Set<Range<Token>>> uniqueSingleRange = new HashMap<>(); 
+			
+			for(Map.Entry<InetAddress, Collection<Range<Token>>> entry : endPointRanges.entrySet()){
+				String entryKey = entry.getKey().toString();
+				Set<Range<Token>> entrySet = new HashSet<>(entry.getValue());
+				for(Map.Entry<String, Set<Range<Token>>> innerEntry : uniqueRange.entrySet()){
+					// in this case get unique range
+					// also check does big key contain the samller one or not
+					String innerEntryKey = innerEntry.getKey().toString();
+					if(innerEntryKey.contains(entryKey)){
+						entrySet.removeAll(innerEntry.getValue());
+					}
+				}
+				if(entrySet!=null){
+					uniqueSingleRange.put(entryKey, entrySet);
+				}
+			}
+		
+			// this is to combine single and common unique ranges
+			for(Map.Entry<String, Set<Range<Token>>> entry : uniqueSingleRange.entrySet()){
+				uniqueRange.put(entry.getKey(), entry.getValue());
+			}
+			
 		System.out.println(uniqueRange.keySet());
 	}
 
