@@ -72,7 +72,9 @@ public class ClientInfo {
     private static final String PASSWD_OPTION = "password";
     private static final String THROTTLE_MBITS = "throttle";
     private static final String INTER_DC_THROTTLE_MBITS = "inter-dc-throttle";
-
+    private static final String SCHEMA_PATH = "schema-path";
+    private static final String OUTPUT_DIR_PATH = "outputDir-path";
+    
     private static final String TRANSPORT_FACTORY = "transport-factory";
 
     /* client encryption options */
@@ -88,9 +90,12 @@ public class ClientInfo {
     private static final String CONFIG_PATH = "conf-path";
     private static ExternalClient externalClient;
     private File directory;
+    private String schemaPath;
+    private String outputDirPath;
     
     public ClientInfo(String args[]) {
         Config.setClientMode(true);
+        System.setProperty("cassandra.config", "file:"+ "/home/barala/Desktop/apache-cassandra-2.1.13/conf/cassandra.yaml");
         LoaderOptions options = LoaderOptions.parseArgs(args);
         this.directory = options.directory;
         externalClient =  new ExternalClient(
@@ -103,9 +108,29 @@ public class ClientInfo {
                 options.sslStoragePort,
                 options.serverEncOptions);
         
+        this.schemaPath=options.schemaPath;
+        this.outputDirPath=options.outputDirPath;
+        
         DatabaseDescriptor.setStreamThroughputOutboundMegabitsPerSec(options.throttle);
         DatabaseDescriptor.setInterDCStreamThroughputOutboundMegabitsPerSec(options.interDcThrottle);
     }
+    
+    /**
+     * 
+     * @return schemaPath
+     */
+    public String getSchemaPath(){
+    	return this.schemaPath;
+    }
+    
+    /**
+     * 
+     * @return outputDirPath
+     */
+    public String getOutputDirPath(){
+    	return this.outputDirPath;
+    }
+    
     
     /**
      * init the endPointRanges for each node
@@ -383,6 +408,8 @@ public class ClientInfo {
     {
         public final File directory;
 
+        public String schemaPath;
+        public String outputDirPath;
         public boolean debug;
         public boolean verbose;
         public boolean noProgress;
@@ -458,6 +485,18 @@ public class ClientInfo {
                 if (cmd.hasOption(PASSWD_OPTION))
                     opts.passwd = cmd.getOptionValue(PASSWD_OPTION);
 
+                if(cmd.hasOption(SCHEMA_PATH)){
+                	opts.schemaPath=cmd.getOptionValue(SCHEMA_PATH);
+                }else{
+                	errorMsg("Provide path of schema :: ", options);
+                }
+                
+                if(cmd.hasOption(OUTPUT_DIR_PATH)){
+                	opts.outputDirPath = cmd.getOptionValue(OUTPUT_DIR_PATH);
+                }else{
+                	errorMsg("Provide outputDirPath", options);
+                }
+                
                 if (cmd.hasOption(INITIAL_HOST_ADDRESS_OPTION))
                 {
                     String[] nodes = cmd.getOptionValue(INITIAL_HOST_ADDRESS_OPTION).split(",");
@@ -667,6 +706,8 @@ public class ClientInfo {
             options.addOption("st", SSL_STORE_TYPE, "STORE-TYPE", "Client SSL: type of store");
             options.addOption("ciphers", SSL_CIPHER_SUITES, "CIPHER-SUITES", "Client SSL: comma-separated list of encryption suites to use");
             options.addOption("f", CONFIG_PATH, "path to config file", "cassandra.yaml file path for streaming throughput and client/server SSL.");
+            options.addOption("sp",SCHEMA_PATH,"path to schema path", "this schema file should have one line schema");
+            options.addOption("op",OUTPUT_DIR_PATH,"path to output dir","whwereve you want to store genrated sstables");
             return options;
         }
 

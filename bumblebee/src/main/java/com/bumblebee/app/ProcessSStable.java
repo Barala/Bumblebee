@@ -11,31 +11,42 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.db.ColumnFamily;
 import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.db.DeletionInfo;
+import org.apache.cassandra.db.DeletionTime;
+import org.apache.cassandra.db.RowIndexEntry;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.ConfigurationException;
+import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
 import org.apache.cassandra.io.sstable.SSTableIdentityIterator;
 import org.apache.cassandra.io.sstable.SSTableReader;
+import org.apache.cassandra.io.sstable.SSTableWriter;
+import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
+import org.apache.cassandra.io.util.RandomAccessReader;
+import org.apache.cassandra.service.ActiveRepairService;
+import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.streaming.DefaultConnectionFactory;
 import org.apache.cassandra.streaming.StreamConnectionFactory;
+import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 
 public class ProcessSStable {
@@ -44,12 +55,16 @@ public class ProcessSStable {
 	private final Client client;
 	private static final boolean debugMode = false;
 	private static File directory;
-	private static Map<String,List<DecoratedKey>> nodesAndDecoratedKey = new HashMap<>();
+	private static Map<String,List<KeyAttributes>> nodesAndDecoratedKey = new HashMap<>();
 	private static Map<String, CFMetaData> allCfMetaData = new HashMap<>();
+	private static String timestamp;
+	private static String OUTPUT_DIR_PATH;
 	
-	public ProcessSStable(Client client, File dir) {
+	public ProcessSStable(Client client, File dir, String outoutDirPath) {
 		this.client = client;
+		OUTPUT_DIR_PATH=outoutDirPath;
 		directory = dir;
+		timestamp= UUID.randomUUID().toString();
 	}
 	
 	
@@ -61,9 +76,10 @@ public class ProcessSStable {
 		return client.getEndpointToRangesMap();
 	}
 	
+	
 	/**
 	 * to initiliaze the schema 
-	 * @param schemaPaht
+	 * @param schemaPath
 	 */
 	public static void initCfMetaData(String schemaPath){
 		List<String> lines;
@@ -85,18 +101,6 @@ public class ProcessSStable {
 	public static void readSStable() throws IOException{
 		List<String> allSSTableFiles = new ArrayList<>();
 		allSSTableFiles = CassandraUtil.generateAbsolutePathOfAllSSTables(directory.getAbsolutePath());
-		Config.setClientMode(true);
-		Config conf = new Config();
-		conf.file_cache_size_in_mb=512;
-		try {
-//			DatabaseDescriptor.loadConfig().
-			DatabaseDescriptor.loadConfig();
-		} catch (Exception e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		}
-
-		//DatabaseDescriptor.loadSchemas(false);
 		for(String SSTable : allSSTableFiles){
 			Descriptor descriptor = Descriptor.fromFilename(SSTable);
 		    // keyspace validation
@@ -111,7 +115,7 @@ public class ProcessSStable {
 		    }else{
 		    	throw new IllegalArgumentException("Please provide valid schema");
 		    }
-		    readSSTable(descriptor, metadata, "");
+		    readSSTable(descriptor, metadata);
 		}
 	}
 	
@@ -124,44 +128,99 @@ public class ProcessSStable {
      * @param metadata Metadata to print keys in a proper format
      * @throws IOException on failure to read/write input/output
      */
-    private static void readSSTable(Descriptor desc, CFMetaData metadata, String modifiedSSTablePath)
+    private static void readSSTable(Descriptor desc, CFMetaData metadata)
 	    throws IOException {
-	readSSTable(SSTableReader.open(desc,metadata), metadata, modifiedSSTablePath);
+	readSSTable(SSTableReader.open(desc,metadata), metadata, desc);
     }
 
-    static void readSSTable(SSTableReader reader, CFMetaData metadata, String modifiedSSTablePath) throws IOException
+    static void readSSTable(SSTableReader reader, CFMetaData metadata,Descriptor desc) throws IOException
     {
         SSTableIdentityIterator row;
         ISSTableScanner scanner = reader.getScanner();
         try
         {
-            while (scanner.hasNext())
-            {	Map<String, List<DecoratedKey>> nodesAndDecoratedKey1 = new HashMap<>(); 
+            while (scanner.hasNext()){
                 row = (SSTableIdentityIterator) scanner.next();
                 DecoratedKey decoratedKey = row.getKey();
                 Token token = decoratedKey.getToken();
                 String node =whichNodeItBelongs(token); 
                 if(node!=null){
-                	if(nodesAndDecoratedKey1.containsKey(node)){
-                		List<DecoratedKey> temp = new ArrayList<>(); 
-                				temp = nodesAndDecoratedKey1.get(node);
-                		temp.add(decoratedKey);
-                		nodesAndDecoratedKey1.put(node, temp);
-                	}else{
-                		nodesAndDecoratedKey1.put(node, Arrays.asList(decoratedKey));
+                	if(!nodesAndDecoratedKey.containsKey(node)){
+                		nodesAndDecoratedKey.put(node, new ArrayList<>());
                 	}
+                		nodesAndDecoratedKey.get(node).add(new KeyAttributes(decoratedKey, row.dataSize));
                 }else{
                 	throw new IllegalArgumentException("Please check your token compare logic @whichNodeItBelongs");
                 }
             }
-            System.out.println("yeah@@");
+            for(Map.Entry<String, List<KeyAttributes>> entry : nodesAndDecoratedKey.entrySet()){
+            	String nodes = entry.getKey();
+            	String fileName = manipulateModifiedSSTableName(nodes, metadata.cfName, desc.filenameFor(Component.DATA));
+                SSTableWriter writer = new SSTableWriter(fileName, entry.getValue().size(), ActiveRepairService.UNREPAIRED_SSTABLE, metadata, StorageService.getPartitioner(), new MetadataCollector(metadata.comparator));
+            	RandomAccessReader dfile = reader.openDataReader();
+            	for(KeyAttributes keyAttributes : entry.getValue()){
+            		DecoratedKey decoratedKey = keyAttributes.getDecoratedKey();
+            		long dataSize = keyAttributes.getDataSize();
+            		RowIndexEntry indexEntry = reader.getPosition(decoratedKey, SSTableReader.Operator.EQ);
+            		if(indexEntry==null){
+            		    continue;
+            		}
+            		dfile.seek(indexEntry.position);
+//            		ByteBufferUtil.readWithShortLength(dfile);
+//            		DeletionInfo deletionInfo = new DeletionInfo(DeletionTime.serializer.deserialize(dfile));
+            		ColumnFamily.setMetaData(metadata);
+            		SSTableIdentityIterator rowForDecoratedKey = new SSTableIdentityIterator(reader, dfile, decoratedKey,dataSize);
+            		ColumnFamily cf =  rowForDecoratedKey.getColumnFamily();
+                    while(rowForDecoratedKey.hasNext()) {
+                        cf.addAtom(rowForDecoratedKey.next());
+                    }
+                    writer.append(decoratedKey,cf);
+            	}
+            	writer.closeAndOpenReader().selfRef().release();
+            }
+        	nodesAndDecoratedKey.clear();
         }
         finally
         {
             scanner.close();
         }
     }
-	
+    
+    /**
+     * appends timestamp to avoid the over riding cases
+     * 
+     * @param node
+     * @param cfName
+     * @param sstable
+     * @param path
+     * @return
+     */
+    private static String manipulateModifiedSSTableName(String node, String cfName, String sstable){
+    	String[] sstablePath = sstable.split("/");
+    	String SSTableDataPart = sstablePath[sstablePath.length-1];
+    	String parentDirPath = OUTPUT_DIR_PATH+"/data/"+timestamp+node+"/"+cfName+"/";
+    	createDir(parentDirPath);
+    	return (parentDirPath+SSTableDataPart);
+    	//return "/home/barala/Bumblebee/data/data/vnodetesting/table1-f42977907bee11e69b7ca541dd0bf22e/vnodetesting-table1-ka-1-Data.db";
+    }
+    
+    
+    private static void createDir(String path){
+    	Path filePath = Paths.get(path);
+    	if(!Files.exists(filePath)){
+    		try{
+    			Files.createDirectories(filePath);
+    		}catch(IOException e){
+    			e.printStackTrace();
+    		}
+    	}
+    }
+    
+	/**
+	 * 
+	 * @param token
+	 * @return
+	 */
     private static String whichNodeItBelongs(Token token){
     	for(Map.Entry<String, Set<Range<Token>>> entry : uniqueRange.entrySet()){
     		for(Range<Token> range : entry.getValue()){
@@ -323,7 +382,7 @@ public class ProcessSStable {
 		return directory;
 	}
 
-
+	
 	public static abstract class Client
     {
         private final Map<InetAddress, Collection<Range<Token>>> endpointToRanges = new HashMap<>();
