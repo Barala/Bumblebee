@@ -27,8 +27,6 @@ import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.ColumnFamily;
 import org.apache.cassandra.db.DecoratedKey;
-import org.apache.cassandra.db.DeletionInfo;
-import org.apache.cassandra.db.DeletionTime;
 import org.apache.cassandra.db.RowIndexEntry;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Range;
@@ -46,7 +44,6 @@ import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.streaming.DefaultConnectionFactory;
 import org.apache.cassandra.streaming.StreamConnectionFactory;
-import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 
 public class ProcessSStable {
@@ -112,6 +109,8 @@ public class ProcessSStable {
 		    CFMetaData metadata;
 		    if(allCfMetaData.containsKey(descriptor.cfname)){
 		    	metadata = allCfMetaData.get(descriptor.cfname);
+//		    	String cql = "CREATE TABLE vnodetesting.table1 ( id int, PRIMARY KEY (id) );";
+//		    	metadata = CFMetaData.compile(cql, descriptor.ksname);
 		    }else{
 		    	throw new IllegalArgumentException("Please provide valid schema");
 		    }
@@ -120,7 +119,6 @@ public class ProcessSStable {
 	}
 	
 	  /**
-     * Export an SSTable and write the resulting JSON to a PrintStream.
      *
      * @param descthe descriptor of the sstable to read from
      * @param outs PrintStream to write the output to
@@ -135,8 +133,10 @@ public class ProcessSStable {
 
     static void readSSTable(SSTableReader reader, CFMetaData metadata,Descriptor desc) throws IOException
     {
-        SSTableIdentityIterator row;
+        SSTableIdentityIterator row,rowForDecoratedKey;
         ISSTableScanner scanner = reader.getScanner();
+        Map<String, SSTableWriter> sstableWritersForEachNode = new HashMap<>();
+        
         try
         {
             while (scanner.hasNext()){
@@ -153,7 +153,60 @@ public class ProcessSStable {
                 	throw new IllegalArgumentException("Please check your token compare logic @whichNodeItBelongs");
                 }
             }
-            for(Map.Entry<String, List<KeyAttributes>> entry : nodesAndDecoratedKey.entrySet()){
+            
+            /**
+             * TODO now we open sstable writers parallel which can cause high cpu load.
+             * IT's better to fetch rows for given decorated key through random access  
+             * open sstable writers corresponding to each unique pair
+             * it should be Map<Node,SSTableWriter>
+             */
+            for(String node : nodesAndDecoratedKey.keySet()){
+            	String fileName = manipulateModifiedSSTableName(node, metadata.cfName, desc.filenameFor(Component.DATA));
+            	SSTableWriter writer = new SSTableWriter(fileName, 
+            			nodesAndDecoratedKey.get(node).size(), 
+            			ActiveRepairService.UNREPAIRED_SSTABLE, metadata, 
+            			StorageService.getPartitioner(), 
+            			new MetadataCollector(metadata.comparator));
+            	sstableWritersForEachNode.put(node, writer);
+            }
+            
+            scanner = reader.getScanner();
+            while(scanner.hasNext()){
+            	row = (SSTableIdentityIterator) scanner.next();
+            	ColumnFamily cf = row.getColumnFamily();
+                DecoratedKey decoratedKey = row.getKey();
+                long datasize = row.dataSize;
+                KeyAttributes keyAttribute = new KeyAttributes(decoratedKey, datasize);
+                for(String node : nodesAndDecoratedKey.keySet()){
+                	if(nodesAndDecoratedKey.get(node).contains(keyAttribute)){
+                		SSTableWriter writer = sstableWritersForEachNode.get(node);
+                        while(row.hasNext()) {
+                            cf.addAtom(row.next());
+                        }
+                        writer.append(decoratedKey,cf);
+                	}
+                }
+            }
+            
+            /**
+             * close all the writers for this sstable
+             * 
+             * This writer will not build summary part because we are not releasing the reference [FIXME]
+             */
+            
+            for(String node : sstableWritersForEachNode.keySet()){
+            	SSTableWriter writer = sstableWritersForEachNode.get(node);
+            	writer.close();
+            }
+            
+            
+            /**
+             * This approach marked all the rows deleted because of timestamp conflict.
+             * In cassandra-2.1.13 they don't allow us to expose the cfid but in later version we can.
+             * 
+             * TODO upgrade this after version change
+             * 
+             * for(Map.Entry<String, List<KeyAttributes>> entry : nodesAndDecoratedKey.entrySet()){
             	String nodes = entry.getKey();
             	String fileName = manipulateModifiedSSTableName(nodes, metadata.cfName, desc.filenameFor(Component.DATA));
                 SSTableWriter writer = new SSTableWriter(fileName, entry.getValue().size(), ActiveRepairService.UNREPAIRED_SSTABLE, metadata, StorageService.getPartitioner(), new MetadataCollector(metadata.comparator));
@@ -166,10 +219,8 @@ public class ProcessSStable {
             		    continue;
             		}
             		dfile.seek(indexEntry.position);
-//            		ByteBufferUtil.readWithShortLength(dfile);
-//            		DeletionInfo deletionInfo = new DeletionInfo(DeletionTime.serializer.deserialize(dfile));
-            		ColumnFamily.setMetaData(metadata);
-            		SSTableIdentityIterator rowForDecoratedKey = new SSTableIdentityIterator(reader, dfile, decoratedKey,dataSize);
+            		//ColumnFamily.setMetaData(metadata);
+            		rowForDecoratedKey = new SSTableIdentityIterator(reader, dfile, decoratedKey,dataSize);
             		ColumnFamily cf =  rowForDecoratedKey.getColumnFamily();
                     while(rowForDecoratedKey.hasNext()) {
                         cf.addAtom(rowForDecoratedKey.next());
@@ -178,6 +229,7 @@ public class ProcessSStable {
             	}
             	writer.closeAndOpenReader().selfRef().release();
             }
+             */
         	nodesAndDecoratedKey.clear();
         }
         finally
@@ -198,10 +250,9 @@ public class ProcessSStable {
     private static String manipulateModifiedSSTableName(String node, String cfName, String sstable){
     	String[] sstablePath = sstable.split("/");
     	String SSTableDataPart = sstablePath[sstablePath.length-1];
-    	String parentDirPath = OUTPUT_DIR_PATH+"/data/"+timestamp+node+"/"+cfName+"/";
+    	String parentDirPath = OUTPUT_DIR_PATH+"/data/"+timestamp+"/"+node+"/"+cfName+"/";
     	createDir(parentDirPath);
     	return (parentDirPath+SSTableDataPart);
-    	//return "/home/barala/Bumblebee/data/data/vnodetesting/table1-f42977907bee11e69b7ca541dd0bf22e/vnodetesting-table1-ka-1-Data.db";
     }
     
     
@@ -371,6 +422,13 @@ public class ProcessSStable {
 	 * @return
 	 */
 	private static String generateUniqueName(String node_one, String node_two){
+		// remove "/" part from node ip address
+		if(node_one.contains("/")){
+			node_one=node_one.replace("/", "");
+		}
+		if(node_two.contains("/")){
+			node_two=node_two.replace("/", "");
+		}
 		if(node_one.compareTo(node_two)>0){
 			return node_one+"_"+node_two;
 		}
