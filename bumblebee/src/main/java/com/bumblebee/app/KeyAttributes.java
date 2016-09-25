@@ -2,10 +2,11 @@ package com.bumblebee.app;
 
 import org.apache.cassandra.db.DecoratedKey;
 /**
- * to store info of key along with the data size
  * 
  * @author barala
  *
+ * * Stores decorated key along with size of the row
+ *  
  */
 public class KeyAttributes {
 	private DecoratedKey decoratedKey;
@@ -31,4 +32,8 @@ public class KeyAttributes {
 	public void setDataSize(long dataSize) {
 		this.dataSize = dataSize;
 	}
+	
+	/**
+	 * TODO Implement equals function for this
+	 */
 }

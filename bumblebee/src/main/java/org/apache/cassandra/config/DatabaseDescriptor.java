@@ -17,6 +17,13 @@
  */
 package org.apache.cassandra.config;
 
+/**
+ * @author barala
+ * 
+ * (1) just put cassandra.yaml under main/resources
+ * 
+ * (2) or override this class to set CFMetadata [In this project we are using 2nd approach]
+ */
 import java.io.File;
 import java.io.FileFilter;
 import java.io.IOException;
