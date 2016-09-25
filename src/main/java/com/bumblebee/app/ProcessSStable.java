@@ -142,7 +142,7 @@ public class ProcessSStable {
                 String node =whichNodeItBelongs(token);
                 if(node!=null){
                 	if(!nodesAndDecoratedKey.containsKey(node)){
-                		nodesAndDecoratedKey.put(node, new ArrayList<>());
+                		nodesAndDecoratedKey.put(node, new ArrayList<KeyAttributes>());
                 	}
                 		nodesAndDecoratedKey.get(node).add(new KeyAttributes(decoratedKey, row.dataSize));
                 }else{

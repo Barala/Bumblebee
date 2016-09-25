@@ -168,7 +168,7 @@ public class CassandraUtil {
     		String nodeIp = inetAddress.toString().replace("/", "");
     		for(Range<Token> range : entry.getValue()){
     			if(!rangeMap.containsKey(range)){
-    				rangeMap.put(range, new ArrayList<>());
+    				rangeMap.put(range, new ArrayList<String>());
     			}
     			rangeMap.get(range).add(nodeIp);
     		}
@@ -178,7 +178,7 @@ public class CassandraUtil {
     		Range<Token> range = entry.getKey();
     		String fullCombinedName = getCombinedFolderName(entry.getValue());
     		if(!uniqueRanges.containsKey(fullCombinedName)){
-    			uniqueRanges.put(fullCombinedName, new ArrayList<>());
+    			uniqueRanges.put(fullCombinedName, new ArrayList<Range<Token>>());
     		}
     		uniqueRanges.get(fullCombinedName).add(range);
     	}
